@@ -7,17 +7,24 @@ enum MotorState {
     IDLE,
     MOVING,
     CALIBRATING_HOME,
-    CALIBRATING_END,
-    CALIBRATING_RETURN,
     CALIBRATING_PAUSE,
+    CALIBRATING_RETURN,
     STEP_HIGH,
     STEP_LOW
+};
+
+enum MotorType {
+    WHEEL,
+    AXIS,
 };
 
 class StepperMotor {
 public:
     // Конструктор: принимает номера пинов для ENA, DIR, PUL
-    StepperMotor(uint8_t pin_ena, uint8_t pin_dir, uint8_t pin_pul);
+    StepperMotor(uint8_t pin_ena, uint8_t pin_dir, uint8_t pin_pul, 
+        bool reverse, float steps_per_mm, float steps_per_degre);
+    StepperMotor(uint8_t pin_ena, uint8_t pin_dir, uint8_t pin_pul, uint8_t pin_endstop, 
+        bool reverse, float steps_per_mm, float steps_per_degre);
 
     // Инициализация пинов
     void begin();
@@ -25,15 +32,27 @@ public:
     // Обновление состояния двигателя - должно вызываться в loop()
     void update();
 
-    // Калибровка: поиск начального и конечного положения
-    // Принимает пины для концевых выключателей
-    void startCalibration(uint8_t pin_endstop_start, uint8_t pin_endstop_end);
+    // Калибровка: поиск начальной позиции и установка максимального расстояния
+    // Принимает пин для начального концевика и максимальное расстояние в шагах
+    void startCalibration(uint8_t pin_endstop_start, long max_distance_steps);
 
     // Движение к абсолютной позиции (в шагах)
     bool moveTo(long absolute_pos);
 
+    // Движение к абсолютной позиции (в мм)
+    bool moveToMM(long absolute_pos_mm);
+    
+    // Движение к абсолютной позиции (в градусах)
+    bool moveToDeg(long absolute_pos_deg);
+
     // Движение на относительное количество шагов
     bool move(long relative_pos);
+
+    // Движение на относительное растояний
+    bool moveMM(long relative_pos_mm);
+
+    // Движение на относительный угол
+    bool moveDeg(long relative_pos_deg);
 
     // Проверка, выполняется ли операция
     bool isBusy();
@@ -63,10 +82,13 @@ private:
     uint8_t _pin_ena;
     uint8_t _pin_dir;
     uint8_t _pin_pul;
-
-    // Пины концевиков
     uint8_t _pin_endstop_start;
-    uint8_t _pin_endstop_end;
+
+    // Характеристики
+    MotorType _motor_type;
+    bool _reverse;
+    float _steps_per_mm;
+    float _steps_per_degre;
 
     // Состояние
     MotorState _state;

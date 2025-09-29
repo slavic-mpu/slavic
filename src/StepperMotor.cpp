@@ -1,9 +1,34 @@
 #include "StepperMotor.h"
 
-StepperMotor::StepperMotor(uint8_t pin_ena, uint8_t pin_dir, uint8_t pin_pul) {
+StepperMotor::StepperMotor(uint8_t pin_ena, uint8_t pin_dir, uint8_t pin_pul, 
+    bool reverse, float steps_per_mm, float steps_per_degre) {
     _pin_ena = pin_ena;
     _pin_dir = pin_dir;
     _pin_pul = pin_pul;
+    _reverse = reverse;
+    _steps_per_mm = steps_per_mm;
+    _steps_per_degre = steps_per_degre;
+    _current_pos = 0;
+    _max_pos = 0;
+    _target_pos = 0;
+    _steps_remaining = 0;
+    _calibrated = false;
+    _state = IDLE;
+    _pulse_state = false;
+    _last_step_time = 0;
+    _pause_start_time = 0;
+    setSpeed(1000); // Скорость по умолчанию 1000 Гц
+}
+
+StepperMotor::StepperMotor(uint8_t pin_ena, uint8_t pin_dir, uint8_t pin_pul, uint8_t pin_endstop, 
+    bool reverse, float steps_per_mm, float steps_per_degre) {
+    _pin_ena = pin_ena;
+    _pin_dir = pin_dir;
+    _pin_pul = pin_pul;
+    _pin_endstop_start = pin_endstop;
+    _reverse = reverse;
+    _steps_per_mm = steps_per_mm;
+    _steps_per_degre = steps_per_degre;
     _current_pos = 0;
     _max_pos = 0;
     _target_pos = 0;
@@ -20,7 +45,7 @@ void StepperMotor::begin() {
     pinMode(_pin_ena, OUTPUT);
     pinMode(_pin_dir, OUTPUT);
     pinMode(_pin_pul, OUTPUT);
-    digitalWrite(_pin_ena, HIGH); // Изначально драйвер выключен
+    disable(); // Изначально драйвер выключен
     digitalWrite(_pin_pul, LOW);  // Изначально пин импульса в LOW
 }
 
@@ -84,7 +109,7 @@ bool StepperMotor::move(long relative_pos) {
     _target_pos = _current_pos + relative_pos;
     _steps_remaining = abs(relative_pos);
     
-    digitalWrite(_pin_ena, LOW); // Включаем драйвер
+    enable(); // Включаем драйвер
     
     // Определяем направление
     if (relative_pos > 0) {
@@ -104,22 +129,24 @@ bool StepperMotor::move(long relative_pos) {
     return true;
 }
 
-void StepperMotor::startCalibration(uint8_t pin_endstop_start, uint8_t pin_endstop_end) {
+void StepperMotor::startCalibration(uint8_t pin_endstop_start, long max_distance_steps) {
     if (_state != IDLE) {
         Serial.println(F("Ошибка: Двигатель занят."));
         return;
     }
     
     _pin_endstop_start = pin_endstop_start;
-    _pin_endstop_end = pin_endstop_end;
+    _max_pos = max_distance_steps;  // Устанавливаем максимальную позицию
     
     pinMode(_pin_endstop_start, INPUT_PULLUP);
-    pinMode(_pin_endstop_end, INPUT_PULLUP);
 
     Serial.println(F("Начало калибровки..."));
     Serial.println(F("Движение к начальному концевику..."));
+    Serial.print(F("Максимальное расстояние установлено: "));
+    Serial.print(_max_pos);
+    Serial.println(F(" шагов."));
     
-    digitalWrite(_pin_ena, LOW);
+    enable();
     digitalWrite(_pin_dir, LOW); // Направление к началу
     
     _state = CALIBRATING_HOME;
@@ -149,7 +176,6 @@ void StepperMotor::update() {
             break;
             
         case CALIBRATING_HOME:
-        case CALIBRATING_END:
         case CALIBRATING_PAUSE:
             updateCalibration();
             break;
@@ -191,7 +217,7 @@ void StepperMotor::updateMovement() {
                 } else {
                     // Движение завершено
                     _state = IDLE;
-                    digitalWrite(_pin_ena, HIGH); // Выключаем драйвер
+                    disable(); // Выключаем драйвер
                 }
             }
         }
@@ -207,6 +233,12 @@ void StepperMotor::updateCalibration() {
                 // Концевик сработал
                 _current_pos = 0;
                 Serial.println(F("Начальная точка найдена. Установлена позиция 0."));
+                Serial.print(F("Длина рейки установлена: "));
+                Serial.print(_max_pos);
+                Serial.println(F(" шагов."));
+                
+                _calibrated = true;
+                disable();
                 _state = CALIBRATING_PAUSE;
                 _pause_start_time = millis();
             } else {
@@ -223,55 +255,15 @@ void StepperMotor::updateCalibration() {
             
         case CALIBRATING_PAUSE:
             if (millis() - _pause_start_time >= 500) {
-                // Пауза закончилась, начинаем поиск конечной точки
-                Serial.println(F("Движение к конечному концевику..."));
-                digitalWrite(_pin_dir, HIGH); // Направление к концу
-                _state = CALIBRATING_END;
-                _last_step_time = micros();
-            }
-            break;
-            
-        case CALIBRATING_END:
-            if (digitalRead(_pin_endstop_end) == LOW) {
-                // Конечный концевик сработал
-                _max_pos = _current_pos;
-                Serial.print(F("Конечная точка найдена. Длина рейки: "));
-                Serial.print(_max_pos);
-                Serial.println(F(" шагов."));
-                
-                _calibrated = true;
-                digitalWrite(_pin_ena, HIGH); // Отключаем драйвер
-                _state = CALIBRATING_PAUSE;
-                _pause_start_time = millis();
-            } else {
-                // Продолжаем движение и считаем шаги
-                if (current_time - _last_step_time >= _delay_micros) {
-                    if (!_pulse_state) {
-                        stepHigh();
-                    } else {
-                        stepLow();
-                        _current_pos++; // Считаем шаги
-                    }
-                }
+                // Пауза закончилась, калибровка завершена
+                Serial.println(F("Калибровка завершена."));
+                _state = IDLE;
             }
             break;
             
         case CALIBRATING_RETURN:
             // Состояние изменится на IDLE автоматически в updateMovement
             // когда движение будет завершено
-            break;
-            
-        default:
-            // Обработка завершения паузы после нахождения конечной точки
-            if (_state == CALIBRATING_PAUSE && _calibrated) {
-                if (millis() - _pause_start_time >= 500) {
-                    // Возвращаемся в начало
-                    Serial.println(F("Возвращение в начальную позицию."));
-                    if (moveTo(0)) {
-                        _state = CALIBRATING_RETURN;
-                    }
-                }
-            }
             break;
     }
 }
